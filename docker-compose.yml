@@ -1,0 +1,152 @@
+version: "3.9"
+
+services:
+  kafka:
+    image: confluentinc/cp-kafka:7.5.3
+    container_name: kafka
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    environment:
+      CLUSTER_ID: "vkojP2ArSDy44_r_POYRNw" 
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
+      
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    networks:
+      - uber-network
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    ports:
+      - "8080:8080"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: "local"
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "kafka:9092"
+      DYNAMIC_CONFIG_ENABLED: "true"
+    networks:
+      - uber-network
+
+  redis:
+    image: redis:7
+    container_name: redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - uber-network
+
+  redis-insight:
+    image: redis/redisinsight:latest
+    container_name: redis-insight
+    ports:
+      - "5540:5540"
+    depends_on:
+      - redis
+    volumes:
+      - redis_insight:/data
+    networks:
+      - uber-network
+
+  tempo:
+    image: grafana/tempo:latest
+    container_name: tempo
+    command: [ "-config.file=/etc/tempo.yaml" ]
+    volumes:
+      - ./tempo-config.yaml:/etc/tempo.yaml
+      - tempo_data:/var/tempo  # Changed path
+    ports:
+      - "3200:3200"   # Tempo UI
+      - "4317:4317"   # OTLP gRPC
+    networks:
+      - uber-network
+    user: root 
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.91.0
+    container_name: otel-collector
+    command: ["--config=/etc/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/config.yaml:ro
+    ports:
+      - "4318:4318"   # OTLP HTTP
+      - "9090:9090"   # Prometheus metrics
+    depends_on:
+      - tempo
+    restart: unless-stopped
+    networks:
+      - uber-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3030:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_DEFAULT_THEME=dark
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+    depends_on:
+      - tempo
+    networks:
+      - uber-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - uber-network
+
+networks:
+  uber-network:
+    driver: bridge
+
+volumes:
+  kafka_data:
+  redis_data:
+  redis_insight:
+  tempo_data:
+  grafana_data:
+  prometheus_data:
